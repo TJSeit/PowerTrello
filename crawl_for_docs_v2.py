@@ -3,7 +3,6 @@ import sys
 import json
 import asyncio
 import requests
-import argparse
 import subprocess
 from xml.etree import ElementTree
 from typing import List, Dict, Any
@@ -42,7 +41,7 @@ class ProcessedChunk:
 
 def chunk_text(text: str, chunk_size: int = 5000) -> List[str]:
     """Split text into chunks, respecting code blocks and paragraphs."""
-    chunks =
+    chunks = []
     start = 0
     text_length = len(text)
 
@@ -96,7 +95,7 @@ async def get_title_and_summary(chunk: str, url: str) -> Dict[str, str]:
     try:
         print(f"Getting title and summary for {url}")
         response = await ollama_client.chat(
-            model="llama2",
+            model="llama3.2",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"URL: {url}\n\nContent:\n{chunk[:1000]}..."}  # Send first 1000 chars for context
@@ -112,7 +111,7 @@ async def get_embedding(text: str) -> List[float]:
     """Get embedding vector from Ollama."""
     try:
         response = await ollama_client.embeddings(
-            model="llama2",
+            model="mxbai-embed-large",
             prompt=text
         )
         return response.embedding
@@ -228,7 +227,7 @@ async def crawl_parallel(urls: List[str], max_concurrent: int = 2):
 
 def get_the_docs_urls(sitemap_url: str) -> List[str]:
     """Get URLs from a sitemap, handling nested sitemaps."""
-    urls =
+    urls = []
     try:
         response = requests.get(sitemap_url)
         response.raise_for_status()
@@ -248,21 +247,18 @@ def get_the_docs_urls(sitemap_url: str) -> List[str]:
         return urls
     except Exception as e:
         print(f"Error fetching sitemap: {e}")
-        return
+        return []
 
 async def main():
-    parser = argparse.ArgumentParser(description="Crawl a sitemap and store the data in Supabase.")
-    parser.add_argument("--sitemap_url", type=str, default="https://www.investopedia.com/sitemap.xml", help="URL of the sitemap to crawl")
-    parser.add_argument("--reverse", action="store_true", help="Crawl the URLs in reverse order")
-    args = parser.parse_args()
-
-    # Get URLs from sitemap
-    urls = get_the_docs_urls(args.sitemap_url)
+    sitemap_url = "https://www.investopedia.com/sitemap.xml"
+    urls = get_the_docs_urls(sitemap_url)
     if not urls:
         print("No URLs found to crawl")
         return
 
-    if args.reverse:
+    # Reverse the order of URLs to prioritize the last ones
+    reverse = False
+    if reverse:
         urls.reverse()
 
     print(f"Found {len(urls)} URLs to crawl")
