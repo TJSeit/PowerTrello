@@ -8,7 +8,7 @@ from xml.etree import ElementTree
 from typing import List, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
@@ -57,7 +57,7 @@ def chunk_text(text: str, chunk_size: int = 5000) -> List[str]:
         # Try to find a code block boundary first (```)
         chunk = text[start:end]
         code_block = chunk.rfind('```')
-        if code_block != -1 and code_block > chunk_size * 0.3:
+        if (code_block != -1) and (code_block > chunk_size * 0.3):
             end = start + code_block
 
         # If no code block, try to break at a paragraph
@@ -190,7 +190,7 @@ async def process_and_store_document(url: str, markdown: str):
     ]
     await asyncio.gather(*insert_tasks)
 
-async def crawl_parallel(urls: List[str], max_concurrent: int = 2):
+async def crawl_parallel(urls: List[str], max_concurrent: int = 5):
     """Crawl multiple URLs in parallel with a concurrency limit."""
     browser_config = BrowserConfig(
         headless=True,
@@ -220,8 +220,10 @@ async def crawl_parallel(urls: List[str], max_concurrent: int = 2):
                 else:
                     print(f"Failed: {url} - Error: {result.error_message}")
         
-        # Process all URLs in parallel with limited concurrency
+        # Process all new URLs in parallel with limited concurrency
         await asyncio.gather(*[process_url(url) for url in urls])
+    except asyncio.CancelledError:
+        print("Crawling was cancelled.")
     finally:
         await crawler.close()
 
@@ -256,13 +258,43 @@ async def main():
         print("No URLs found to crawl")
         return
 
-    # Reverse the order of URLs to prioritize the last ones
-    reverse = False
-    if reverse:
-        urls.reverse()
+    # Filter out any URLs already in the database
+    existing_urls_set = set()
+    page = 0
+    while True:
+        result = supabase.table("site_pages").select("url").eq("metadata->>source", "investopedia_docs").range(page * 1000, (page + 1) * 1000 - 1).execute()
+        if not result.data:
+            break
+        existing_urls_set.update(record["url"] for record in result.data)
+        page += 1
 
-    print(f"Found {len(urls)} URLs to crawl")
-    await crawl_parallel(urls)
+    new_urls = [url for url in urls if url not in existing_urls_set]
+    # Filter out sitemap XML URLs and existing URLs
+    new_urls = [url for url in urls if url not in existing_urls_set and not (url.lower().endswith('.xml') and 'sitemap' in url.lower())]
+    
+    print(f"\nTotal existing URLs in database: {len(existing_urls_set)}")
+    print(f"\nTotal number of URLs in sitemap: {len(urls)}")
+    print(f"\nTotal number of new URLs in sitemap: {len(new_urls)}")
+    
+    input("\nPress Enter to continue...")
+
+    # Reverse the order of URLs to prioritize the last ones
+    reverse = True
+    if reverse:
+        new_urls.reverse()
+
+    print(f"\nFound {len(new_urls)} new URLs to crawl")
+    await crawl_parallel(new_urls)
+
+import signal
+
+def handle_sigint(signal, frame):
+    print("Script interrupted by user.")
+    sys.exit(0)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    signal.signal(signal.SIGINT, handle_sigint)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Script interrupted by user.")
