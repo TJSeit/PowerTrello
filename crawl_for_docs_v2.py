@@ -167,12 +167,6 @@ async def insert_chunk(chunk: ProcessedChunk):
 
 async def process_and_store_document(url: str, markdown: str):
     """Process a document and store its chunks in parallel."""
-    # Check if the URL already exists in Supabase
-    existing_record = supabase.table("site_pages").select("url").eq("url", url).execute()
-    if existing_record.data:
-        print(f"Skipping {url} - already exists in database")
-        return
-
     # Split into chunks
     chunks = chunk_text(markdown)
     
@@ -190,7 +184,7 @@ async def process_and_store_document(url: str, markdown: str):
     ]
     await asyncio.gather(*insert_tasks)
 
-async def crawl_parallel(urls: List[str], max_concurrent: int = 5):
+async def crawl_parallel(urls: List[str], max_concurrent: int = 8):
     """Crawl multiple URLs in parallel with a concurrency limit."""
     browser_config = BrowserConfig(
         headless=True,
@@ -257,29 +251,40 @@ async def main():
     if not urls:
         print("No URLs found to crawl")
         return
-
-    # Filter out any URLs already in the database
-    existing_urls_set = set()
-    page = 0
-    while True:
-        result = supabase.table("site_pages").select("url").eq("metadata->>source", "investopedia_docs").range(page * 1000, (page + 1) * 1000 - 1).execute()
-        if not result.data:
-            break
-        existing_urls_set.update(record["url"] for record in result.data)
-        page += 1
-
-    new_urls = [url for url in urls if url not in existing_urls_set]
-    # Filter out sitemap XML URLs and existing URLs
-    new_urls = [url for url in urls if url not in existing_urls_set and not (url.lower().endswith('.xml') and 'sitemap' in url.lower())]
     
-    print(f"\nTotal existing URLs in database: {len(existing_urls_set)}")
+    # Filter out sitemap XML URLs first to reduce the set we need to check
+    potential_urls = [url for url in urls if not (url.lower().endswith('.xml') and 'sitemap' in url.lower())]
+    
+    # Process URLs in smaller batches to avoid memory issues
+    batch_size = 1000
+    new_urls = []
+    
+    for i in range(0, len(potential_urls), batch_size):
+        batch = potential_urls[i:i + batch_size]
+        existing_set = set()
+        
+        # Split into smaller sub-batches for Supabase query
+        sub_batch_size = 100
+        for j in range(0, len(batch), sub_batch_size):
+            sub_batch = batch[j:j + sub_batch_size]
+            response = supabase.table("site_pages") \
+                .select("url") \
+                .in_("url", sub_batch) \
+                .execute()
+            existing_set.update(record['url'] for record in response.data)
+        
+        new_urls.extend([url for url in batch if url not in existing_set])
+        print(f"Processed {i + len(batch)}/{len(potential_urls)} URLs...")
+
+    # Filter out sitemap XML URLs and existing URLs
+    
     print(f"\nTotal number of URLs in sitemap: {len(urls)}")
     print(f"\nTotal number of new URLs in sitemap: {len(new_urls)}")
     
     input("\nPress Enter to continue...")
 
     # Reverse the order of URLs to prioritize the last ones
-    reverse = True
+    reverse = False
     if reverse:
         new_urls.reverse()
 
